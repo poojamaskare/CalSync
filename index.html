@@ -9,8 +9,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <!-- PapaParse is used to easily parse CSV data from a URL -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <!-- Library for parsing .xlsx files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -31,11 +31,26 @@
 </head>
 <body class="flex h-screen overflow-hidden">
     <!-- Sidebar Navigation -->
-    <aside class="w-64 bg-white border-r border-gray-200 flex-shrink-0 flex flex-col">
+    <aside class="w-80 bg-white border-r border-gray-200 flex-shrink-0 flex flex-col">
         <div class="p-6 text-xl font-bold text-gray-800 border-b border-gray-200"><i class="fa-solid fa-calendar-days text-blue-600"></i> Timetable</div>
-        <nav id="sidebar-nav" class="p-4 space-y-1 flex-grow overflow-y-auto">
-            <!-- Sidebar will be dynamically generated here -->
-        </nav>
+        
+        <div class="flex-grow overflow-y-auto">
+            <!-- Load Timetable section -->
+            <div class="p-4 space-y-4 border-b border-gray-200">
+                 <h2 class="text-lg font-bold text-gray-800">Load Timetable</h2>
+                <!-- File Input -->
+                <div>
+                    <label for="file-upload" class="text-sm font-medium text-gray-700">Upload .xlsx File</label>
+                    <input type="file" id="file-upload" accept=".xlsx, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                </div>
+            </div>
+
+            <!-- Navigation for divisions -->
+            <nav id="sidebar-nav" class="p-4 space-y-1">
+                <!-- Sidebar with divisions will be dynamically generated here -->
+            </nav>
+        </div>
+
         <div class="p-4 border-t border-gray-200 text-xs text-gray-400">
             <p>&copy; 2025 College Timetable</p>
             <p style="color: rgba(156, 5, 5,0.5);">APSIT Smart CampusSync.</p>
@@ -45,13 +60,12 @@
     <!-- Main Content -->
     <main class="flex-1 bg-gray-50 overflow-y-auto">
         <div class="p-6 md:p-8">
-            <header class="mb-6"><h1 id="timetable-header" class="text-2xl font-bold text-gray-800">Loading Timetable...</h1><p id="timetable-subheader" class="text-gray-500 mt-1">Please select a division to view the schedule.</p></header>
+            <header class="mb-6"><h1 id="timetable-header" class="text-2xl font-bold text-gray-800">Welcome!</h1><p id="timetable-subheader" class="text-gray-500 mt-1">Upload a timetable to begin.</p></header>
             <div id="day-filter" class="flex flex-wrap gap-2 mb-6"></div>
             <div id="timetable-container" class="relative">
-                <div id="loader" class="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-20 rounded-lg"><div class="flex items-center gap-3 text-gray-600"><i class="fa-solid fa-spinner fa-spin text-xl"></i><span class="text-base font-medium">Fetching schedule...</span></div></div>
-                <!-- This div will now hold the stacked cards -->
+                <div id="loader" class="hidden absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-20 rounded-lg"><div class="flex items-center gap-3 text-gray-600"><i class="fa-solid fa-spinner fa-spin text-xl"></i><span class="text-base font-medium">Parsing file...</span></div></div>
                 <div id="timetable-grid" class="space-y-4"></div>
-                <div id="empty-state" class="hidden text-center py-20 px-6 bg-white rounded-lg shadow-sm"><i class="fa-solid fa-calendar-xmark text-4xl text-gray-300 mb-4"></i><h3 class="text-lg font-semibold text-gray-700">No Lectures Scheduled</h3><p class="text-gray-500 mt-2">There are no classes scheduled for this day.</p></div>
+                <div id="empty-state" class="hidden text-center py-20 px-6 bg-white rounded-lg shadow-sm"><i class="fa-solid fa-calendar-xmark text-4xl text-gray-300 mb-4"></i><h3 id="empty-state-title" class="text-lg font-semibold text-gray-700">No Lectures Scheduled</h3><p id="empty-state-message" class="text-gray-500 mt-2">There are no classes scheduled for this day.</p></div>
             </div>
         </div>
     </main>
@@ -60,12 +74,6 @@
         document.addEventListener('DOMContentLoaded', () => {
             // --- CONFIGURATION ---
             const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-            
-            // 1. Your Google Sheet ID
-            const SPREADSHEET_ID = "11VJGJN7MkO6GEkx3deaQ3DRgBmdminEZJtaEdTFERFo";
-
-            // 2. The GID of your single master sheet
-            const MASTER_SHEET_GID = "0";
 
             // --- STATE ---
             let allTimetableData = [];
@@ -80,55 +88,84 @@
             const timetableSubheader = document.getElementById('timetable-subheader');
             const loader = document.getElementById('loader');
             const emptyState = document.getElementById('empty-state');
+            const emptyStateTitle = document.getElementById('empty-state-title');
+            const emptyStateMessage = document.getElementById('empty-state-message');
+            const fileUploadInput = document.getElementById('file-upload');
             
             // --- CORE FUNCTIONS ---
+            const excelSerialToTimeString = (serial) => {
+                if (typeof serial !== 'number' || serial < 0 || serial >= 1) {
+                    return serial; 
+                }
+                const totalSeconds = Math.round(serial * 86400);
+                const hours24 = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const period = hours24 >= 12 ? 'PM' : 'AM';
+                const hours12 = hours24 % 12 || 12;
+                return `${hours12}:${String(minutes).padStart(2, '0')} ${period}`;
+            };
 
-            const fetchAndParseData = () => {
-                const CSV_URL = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/export?format=csv&gid=${MASTER_SHEET_GID}&t=${new Date().getTime()}`;
-                
+            const parseXlsxFile = (file) => {
                 showLoader(true);
-                Papa.parse(CSV_URL, {
-                    download: true,
-                    header: true,
-                    skipEmptyLines: true,
-                    complete: (results) => {
-                        if (!results.data || results.data.length === 0) {
-                            handleError("The Google Sheet appears to be empty.");
-                            return;
-                        }
-
-                        const data = results.data;
-                        const firstRow = data[0];
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, {type: 'array'});
+                        const firstSheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[firstSheetName];
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, {header: 1, raw: true}); 
                         
-                        let divisionKey = null;
-                        const possibleKeys = ['DIVISION_ID', 'DIVISION ID', 'Division_ID', 'Division ID', 'division_id', 'division id', 'DIVISION'];
-                        for (const key of possibleKeys) {
-                            if (firstRow.hasOwnProperty(key)) {
-                                divisionKey = key;
-                                break;
-                            }
-                        }
+                        const headers = jsonData[0];
+                        const objectData = jsonData.slice(1).map(row => {
+                            let obj = {};
+                            headers.forEach((header, i) => {
+                                let value = row[i];
+                                if ((header === 'STARTS' || header === 'ENDS') && typeof value === 'number') {
+                                    obj[header] = excelSerialToTimeString(value);
+                                } else {
+                                    obj[header] = value;
+                                }
+                            });
+                            return obj;
+                        });
 
-                        if (!divisionKey) {
-                            handleError("Please ensure your sheet has a column named 'DIVISION_ID'.");
-                            return;
-                        }
-
-                        if (divisionKey !== 'DIVISION_ID') {
-                            for (const row of data) {
-                                row['DIVISION_ID'] = row[divisionKey];
-                                delete row[divisionKey];
-                            }
-                        }
-                        
-                        allTimetableData = data;
-                        initApplication();
-                    },
-                    error: (error) => {
-                        console.error("Papa Parse Error:", error);
-                        handleError("Could not fetch data. Check SPREADSHEET_ID, GID, and Share Settings.");
+                        processParsedData(objectData);
+                    } catch (error) {
+                        console.error("XLSX Parse Error:", error);
+                        handleError("Could not read the .xlsx file. Ensure it is not corrupted and has the correct format.");
                     }
-                });
+                };
+                reader.onerror = () => handleError("Failed to read the uploaded file.");
+                reader.readAsArrayBuffer(file);
+            };
+            
+            const processParsedData = (data) => {
+                if (!data || data.length === 0) {
+                    handleError("The data source appears to be empty.");
+                    return;
+                }
+                const firstRow = data[0];
+                let divisionKey = null;
+                const possibleKeys = ['DIVISION_ID', 'DIVISION ID', 'Division_ID', 'Division ID', 'division_id', 'division id', 'DIVISION'];
+                for (const key of possibleKeys) {
+                    if (firstRow.hasOwnProperty(key)) {
+                        divisionKey = key;
+                        break;
+                    }
+                }
+                if (!divisionKey) {
+                    handleError("Please ensure your sheet has a column named 'DIVISION_ID'.");
+                    return;
+                }
+                if (divisionKey !== 'DIVISION_ID') {
+                    for (const row of data) {
+                        row['DIVISION_ID'] = row[divisionKey];
+                        delete row[divisionKey];
+                    }
+                }
+                allTimetableData = data;
+                initApplication();
             };
 
             const populateSidebar = () => {
@@ -181,7 +218,7 @@
             };
             
             const renderTimetableGrid = () => {
-                timetableGrid.innerHTML = ''; // Clear previous cards
+                timetableGrid.innerHTML = '';
 
                 const filteredData = allTimetableData.filter(item => 
                     item.DIVISION_ID === currentDivision &&
@@ -189,7 +226,7 @@
                 );
 
                 if (filteredData.length === 0) {
-                    showEmptyState(true);
+                    showEmptyState(true, "No Lectures Scheduled", "There are no classes scheduled for this day.");
                     return;
                 }
                 
@@ -201,21 +238,14 @@
                 });
             };
 
-            // **UPDATED**: This function now implements the new color scheme.
             const getSubjectColor = (type = '') => {
                 const lowerCaseType = type.toLowerCase();
                 switch (lowerCaseType) {
-                    case 'lecture':
-                    case 'lab':
-                        return 'bg-blue-100 border-blue-500 text-blue-800';
-                    case 'break':
-                        return 'bg-green-100 border-green-500 text-green-800';
-                    case 'honor':
-                        return 'bg-yellow-100 border-yellow-500 text-yellow-800';
-                    case 'ment':
-                        return 'bg-purple-100 border-purple-500 text-purple-800';
-                    default:
-                        return 'bg-indigo-100 border-indigo-500 text-indigo-800';
+                    case 'lecture': case 'lab': return 'bg-blue-100 border-blue-500 text-blue-800';
+                    case 'break': return 'bg-green-100 border-green-500 text-green-800';
+                    case 'honor': return 'bg-yellow-100 border-yellow-500 text-yellow-800';
+                    case 'ment': return 'bg-purple-100 border-purple-500 text-purple-800';
+                    default: return 'bg-indigo-100 border-indigo-500 text-indigo-800';
                 }
             };
 
@@ -245,17 +275,31 @@
             const updateActiveSidebarLink = () => { document.querySelectorAll('.division-link').forEach(link => { if (link.dataset.division === currentDivision) { link.classList.add('active'); link.closest('details').open = true; } else { link.classList.remove('active'); } }); };
             const renderHeader = () => { timetableHeader.textContent = `${currentDivision} Timetable`; timetableSubheader.textContent = `Showing schedule for ${currentDay}`; };
             const showLoader = (visible) => { loader.style.display = visible ? 'flex' : 'none'; };
-            const showEmptyState = (visible) => {
+            const showEmptyState = (visible, title = '', message = '') => {
                 timetableGrid.style.display = visible ? 'none' : 'block';
                 emptyState.style.display = visible ? 'block' : 'none';
+                if(visible) {
+                    emptyStateTitle.textContent = title;
+                    emptyStateMessage.textContent = message;
+                }
             };
             const handleError = (message) => {
                 console.error(message);
-                timetableHeader.textContent = "Error";
-                timetableSubheader.textContent = message;
+                showInitialWelcomeState("Error", message);
                 showLoader(false);
             };
             
+            const showInitialWelcomeState = (title = "Welcome!", message = "Upload an .xlsx file to begin.") => {
+                timetableHeader.textContent = title;
+                timetableSubheader.textContent = message;
+                sidebarNav.innerHTML = '';
+                dayFilterContainer.innerHTML = '';
+                timetableGrid.innerHTML = '';
+                showEmptyState(true, "No Timetable Loaded", "Use the panel on the left to load a sheet.");
+                loader.style.display = 'none';
+            };
+
+            // --- EVENT LISTENERS ---
             sidebarNav.addEventListener('click', (e) => {
                 const link = e.target.closest('.division-link');
                 if (link && link.dataset.division) {
@@ -273,6 +317,13 @@
                     render();
                 }
             });
+            
+            fileUploadInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    parseXlsxFile(file);
+                }
+            });
 
             const initApplication = () => {
                 populateSidebar();
@@ -286,7 +337,8 @@
                 showLoader(false);
             };
             
-            fetchAndParseData();
+            // --- INITIAL LOAD ---
+            showInitialWelcomeState();
         });
     </script>
 </body>
