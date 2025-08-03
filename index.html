@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>College Timetable Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- PapaParse is used to easily parse CSV data from a URL -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 10px; }
+        ::-webkit-scrollbar-track { background-color: #f1f5f9; }
+        .year-summary { cursor: pointer; display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 1rem; border-radius: 0.5rem; font-weight: 500; color: #334155; transition: background-color 0.2s; }
+        .year-summary:hover { background-color: #f1f3f4; }
+        .year-summary .arrow { transition: transform 0.2s; }
+        details[open] > summary .arrow { transform: rotate(90deg); }
+        .division-link { display: block; padding: 0.5rem 1rem 0.5rem 3rem; font-size: 0.875rem; border-radius: 0.5rem; color: #475569; transition: all 0.2s; }
+        .division-link:hover { background-color: #f1f3f4; color: #202124; }
+        .division-link.active { background-color: #e8f0fe; color: #1a73e8; font-weight: 600; }
+        .day-filter-btn { transition: all 0.2s; }
+        .day-filter-btn.active { background-color: #1a73e8; color: white; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .timetable-card { animation: fadeIn 0.4s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden">
+    <!-- Sidebar Navigation -->
+    <aside class="w-64 bg-white border-r border-gray-200 flex-shrink-0 flex flex-col">
+        <div class="p-6 text-xl font-bold text-gray-800 border-b border-gray-200"><i class="fa-solid fa-calendar-days text-blue-600"></i> Timetable</div>
+        <nav id="sidebar-nav" class="p-4 space-y-1 flex-grow overflow-y-auto">
+            <!-- Sidebar will be dynamically generated here -->
+        </nav>
+        <div class="p-4 border-t border-gray-200 text-xs text-gray-400">
+            <p>&copy; 2025 College Timetable</p>
+            <p style="color: rgba(156, 5, 5,0.5);">APSIT Smart CampusSync.</p>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 bg-gray-50 overflow-y-auto">
+        <div class="p-6 md:p-8">
+            <header class="mb-6"><h1 id="timetable-header" class="text-2xl font-bold text-gray-800">Loading Timetable...</h1><p id="timetable-subheader" class="text-gray-500 mt-1">Please select a division to view the schedule.</p></header>
+            <div id="day-filter" class="flex flex-wrap gap-2 mb-6"></div>
+            <div id="timetable-container" class="relative">
+                <div id="loader" class="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-20 rounded-lg"><div class="flex items-center gap-3 text-gray-600"><i class="fa-solid fa-spinner fa-spin text-xl"></i><span class="text-base font-medium">Fetching schedule...</span></div></div>
+                <!-- This div will now hold the stacked cards -->
+                <div id="timetable-grid" class="space-y-4"></div>
+                <div id="empty-state" class="hidden text-center py-20 px-6 bg-white rounded-lg shadow-sm"><i class="fa-solid fa-calendar-xmark text-4xl text-gray-300 mb-4"></i><h3 class="text-lg font-semibold text-gray-700">No Lectures Scheduled</h3><p class="text-gray-500 mt-2">There are no classes scheduled for this day.</p></div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- CONFIGURATION ---
+            const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            
+            // 1. Your Google Sheet ID
+            const SPREADSHEET_ID = "11VJGJN7MkO6GEkx3deaQ3DRgBmdminEZJtaEdTFERFo";
+
+            // 2. The GID of your single master sheet
+            const MASTER_SHEET_GID = "0";
+
+            // --- STATE ---
+            let allTimetableData = [];
+            let currentDivision = '';
+            let currentDay = 'Monday';
+
+            // --- DOM ELEMENTS ---
+            const sidebarNav = document.getElementById('sidebar-nav');
+            const dayFilterContainer = document.getElementById('day-filter');
+            const timetableGrid = document.getElementById('timetable-grid');
+            const timetableHeader = document.getElementById('timetable-header');
+            const timetableSubheader = document.getElementById('timetable-subheader');
+            const loader = document.getElementById('loader');
+            const emptyState = document.getElementById('empty-state');
+            
+            // --- CORE FUNCTIONS ---
+
+            const fetchAndParseData = () => {
+                const CSV_URL = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/export?format=csv&gid=${MASTER_SHEET_GID}&t=${new Date().getTime()}`;
+                
+                showLoader(true);
+                Papa.parse(CSV_URL, {
+                    download: true,
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        if (!results.data || results.data.length === 0) {
+                            handleError("The Google Sheet appears to be empty.");
+                            return;
+                        }
+
+                        const data = results.data;
+                        const firstRow = data[0];
+                        
+                        let divisionKey = null;
+                        const possibleKeys = ['DIVISION_ID', 'DIVISION ID', 'Division_ID', 'Division ID', 'division_id', 'division id', 'DIVISION'];
+                        for (const key of possibleKeys) {
+                            if (firstRow.hasOwnProperty(key)) {
+                                divisionKey = key;
+                                break;
+                            }
+                        }
+
+                        if (!divisionKey) {
+                            handleError("Please ensure your sheet has a column named 'DIVISION_ID'.");
+                            return;
+                        }
+
+                        if (divisionKey !== 'DIVISION_ID') {
+                            for (const row of data) {
+                                row['DIVISION_ID'] = row[divisionKey];
+                                delete row[divisionKey];
+                            }
+                        }
+                        
+                        allTimetableData = data;
+                        initApplication();
+                    },
+                    error: (error) => {
+                        console.error("Papa Parse Error:", error);
+                        handleError("Could not fetch data. Check SPREADSHEET_ID, GID, and Share Settings.");
+                    }
+                });
+            };
+
+            const populateSidebar = () => {
+                const yearMap = new Map();
+                const yearNameMapping = { 'FE': 'First Year', 'SE': 'Second Year', 'TE': 'Third Year', 'BE': 'Fourth Year' };
+                const yearIconMapping = { 'FE': 'fa-child', 'SE': 'fa-user-graduate', 'TE': 'fa-user-tie', 'BE': 'fa-user-gear' };
+
+                allTimetableData.forEach(item => {
+                    const divisionId = item.DIVISION_ID;
+                    if (!divisionId) return;
+
+                    const [yearCode] = divisionId.split('-');
+                    if (!yearMap.has(yearCode)) {
+                        yearMap.set(yearCode, new Set());
+                    }
+                    yearMap.get(yearCode).add(divisionId);
+                });
+
+                sidebarNav.innerHTML = '';
+                const sortedYears = [...yearMap.keys()].sort();
+
+                for (const yearCode of sortedYears) {
+                    const yearName = yearNameMapping[yearCode] || `${yearCode} Year`;
+                    const iconClass = yearIconMapping[yearCode] || 'fa-user';
+                    const details = document.createElement('details');
+                    
+                    let divisionLinks = '';
+                    const divisions = [...yearMap.get(yearCode)].sort();
+                    
+                    divisions.forEach(divId => {
+                        const divisionName = divId.substring(yearCode.length + 1);
+                        divisionLinks += `<a href="#" data-division="${divId}" class="division-link">Division ${divisionName}</a>`;
+                    });
+
+                    details.innerHTML = `
+                        <summary class="year-summary list-none">
+                            <i class="fa-solid ${iconClass} w-5 text-center text-gray-500"></i> ${yearName} 
+                            <i class="fa-solid fa-chevron-right arrow ml-auto text-xs"></i>
+                        </summary>
+                        <div class="mt-1 space-y-1">${divisionLinks}</div>`;
+                    sidebarNav.appendChild(details);
+                }
+            };
+
+            const render = () => {
+                renderDayFilters();
+                updateActiveSidebarLink();
+                renderHeader();
+                renderTimetableGrid();
+            };
+            
+            const renderTimetableGrid = () => {
+                timetableGrid.innerHTML = ''; // Clear previous cards
+
+                const filteredData = allTimetableData.filter(item => 
+                    item.DIVISION_ID === currentDivision &&
+                    item.DAY && item.DAY.trim().toLowerCase() === currentDay.toLowerCase()
+                );
+
+                if (filteredData.length === 0) {
+                    showEmptyState(true);
+                    return;
+                }
+                
+                showEmptyState(false);
+                
+                filteredData.forEach(item => {
+                    const card = createLectureCard(item);
+                    if (card) timetableGrid.appendChild(card);
+                });
+            };
+
+            // **UPDATED**: This function now implements the new color scheme.
+            const getSubjectColor = (type = '') => {
+                const lowerCaseType = type.toLowerCase();
+                switch (lowerCaseType) {
+                    case 'lecture':
+                    case 'lab':
+                        return 'bg-blue-100 border-blue-500 text-blue-800';
+                    case 'break':
+                        return 'bg-green-100 border-green-500 text-green-800';
+                    case 'honor':
+                        return 'bg-yellow-100 border-yellow-500 text-yellow-800';
+                    case 'ment':
+                        return 'bg-purple-100 border-purple-500 text-purple-800';
+                    default:
+                        return 'bg-indigo-100 border-indigo-500 text-indigo-800';
+                }
+            };
+
+            const createLectureCard = (item) => {
+                const startTimeStr = item.STARTS || '';
+                const endTimeStr = item.ENDS || '';
+                if (!startTimeStr || !endTimeStr) return null;
+
+                const card = document.createElement('div');
+                card.className = `w-full timetable-card p-4 rounded-lg border-l-4 shadow-sm ${getSubjectColor(item.TYPE)}`;
+                
+                const batchInfo = item.BATCH && item.BATCH.toLowerCase() !== 'null' ? ` (${item.BATCH})` : '';
+                
+                card.innerHTML = `
+                    <p class="font-bold text-base">${item.NAME || 'N/A'}</p>
+                    <div class="grid grid-cols-2 gap-x-4 text-sm mt-2 opacity-90">
+                        <span><i class="fa-solid fa-bookmark fa-fw w-4 opacity-70"></i> ${item.TYPE || 'N/A'}${batchInfo}</span>
+                        <span><i class="fa-solid fa-user-tie fa-fw w-4 opacity-70"></i> ${item.FACULTY || 'N/A'}</span>
+                        <span><i class="fa-solid fa-location-dot fa-fw w-4 opacity-70"></i> ${item.ROOM || 'N/A'}</span>
+                        <span><i class="fa-solid fa-clock fa-fw w-4 opacity-70"></i> ${startTimeStr} - ${endTimeStr}</span>
+                    </div>
+                `;
+                return card;
+            };
+
+            const renderDayFilters = () => { dayFilterContainer.innerHTML = ''; DAYS.forEach(day => { const button = document.createElement('button'); button.textContent = day.substring(0, 3); button.dataset.day = day; button.className = `day-filter-btn px-3 py-1 rounded-full text-sm font-medium ${day.toLowerCase() === currentDay.toLowerCase() ? 'active' : 'bg-white text-gray-600 shadow-sm'}`; dayFilterContainer.appendChild(button); }); };
+            const updateActiveSidebarLink = () => { document.querySelectorAll('.division-link').forEach(link => { if (link.dataset.division === currentDivision) { link.classList.add('active'); link.closest('details').open = true; } else { link.classList.remove('active'); } }); };
+            const renderHeader = () => { timetableHeader.textContent = `${currentDivision} Timetable`; timetableSubheader.textContent = `Showing schedule for ${currentDay}`; };
+            const showLoader = (visible) => { loader.style.display = visible ? 'flex' : 'none'; };
+            const showEmptyState = (visible) => {
+                timetableGrid.style.display = visible ? 'none' : 'block';
+                emptyState.style.display = visible ? 'block' : 'none';
+            };
+            const handleError = (message) => {
+                console.error(message);
+                timetableHeader.textContent = "Error";
+                timetableSubheader.textContent = message;
+                showLoader(false);
+            };
+            
+            sidebarNav.addEventListener('click', (e) => {
+                const link = e.target.closest('.division-link');
+                if (link && link.dataset.division) {
+                    e.preventDefault();
+                    currentDivision = link.dataset.division;
+                    currentDay = 'Monday';
+                    render();
+                }
+            });
+
+            dayFilterContainer.addEventListener('click', (e) => {
+                const button = e.target.closest('.day-filter-btn');
+                if (button && button.dataset.day) {
+                    currentDay = button.dataset.day;
+                    render();
+                }
+            });
+
+            const initApplication = () => {
+                populateSidebar();
+                if (allTimetableData.length > 0) {
+                    const firstDivisionLink = sidebarNav.querySelector('.division-link');
+                    if(firstDivisionLink) {
+                        currentDivision = firstDivisionLink.dataset.division;
+                    }
+                }
+                render();
+                showLoader(false);
+            };
+            
+            fetchAndParseData();
+        });
+    </script>
+</body>
+</html>
